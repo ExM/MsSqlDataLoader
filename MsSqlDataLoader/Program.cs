@@ -11,75 +11,100 @@ namespace MsSqlDataLoader
 {
 	class Program
 	{
-		static void Main(string[] args)
+		static int Main(string[] args)
 		{
-			var connString = args[0];
-			var conn = new SqlConnection(connString);
-			conn.Open();
-
-			foreach(var ti in GetTables(conn))
+			if (args.Length != 1)
 			{
-				Console.Write("Load table {0} - ", ti.ToString());
-				int consoleCol = Console.CursorLeft;
-				Console.Write("0");
-
-				var file = ti.Schema + "." + ti.Name + ".sql";
-				bool isAutoIncrement = CheckIdentity(conn, ti);
-
-				string query = string.Format("select * from {0}", ti);
-
-				var cmd = new SqlCommand(query, conn);
-
-				var sb = new StringBuilder();
-
-				int total = 0;
-
-				using (var reader = cmd.ExecuteReader())
-				{
-					var cols = reader.FieldCount;
-					var colNames = Enumerable.Range(0, cols).Select(i => "[" + reader.GetName(i) + "]");
-					var insertHeader = string.Format("INSERT {0} ({1}) VALUES", ti, string.Join(", ", colNames));
-
-					var textRows = new List<string>();
-
-					while (reader.Read())
-					{
-						textRows.Add(RowToValues(Enumerable.Range(0, cols).Select(reader.GetValue)));
-
-						if (textRows.Count >= 100)
-						{
-							total += textRows.Count;
-							Write(sb, insertHeader, textRows);
-							textRows.Clear();
-
-							Console.CursorLeft = consoleCol;
-							Console.Write(total);
-						}
-					}
-
-
-					total += textRows.Count;
-					Write(sb, insertHeader, textRows);
-					Console.CursorLeft = consoleCol;
-					Console.Write(total);
-				}
-
-				if (sb.Length != 0)
-				{
-					if (isAutoIncrement)
-					{
-						sb.Insert(0, string.Format("SET IDENTITY_INSERT {0} ON\r\n\r\n", ti));
-						sb.Append(string.Format("SET IDENTITY_INSERT {0} OFF\r\n", ti));
-					}
-					File.WriteAllText(file, sb.ToString());
-
-					Console.WriteLine(" saved.");
-				}
-				else
-				{
-					Console.WriteLine();
-				}
+				ShowUsage();
+				return 1;
 			}
+
+			var connString = args[0];
+
+			try
+			{
+				var conn = new SqlConnection(connString);
+				conn.Open();
+
+				foreach (var ti in GetTables(conn))
+				{
+					Console.Write("Load table {0} - ", ti.ToString());
+					int consoleCol = Console.CursorLeft;
+					Console.Write("0");
+
+					var file = ti.Schema + "." + ti.Name + ".sql";
+					bool isAutoIncrement = CheckIdentity(conn, ti);
+
+					string query = string.Format("select * from {0}", ti);
+
+					var cmd = new SqlCommand(query, conn);
+
+					var sb = new StringBuilder();
+
+					int total = 0;
+
+					using (var reader = cmd.ExecuteReader())
+					{
+						var cols = reader.FieldCount;
+						var colNames = Enumerable.Range(0, cols).Select(i => "[" + reader.GetName(i) + "]");
+						var insertHeader = string.Format("INSERT {0} ({1}) VALUES", ti, string.Join(", ", colNames));
+
+						var textRows = new List<string>();
+
+						while (reader.Read())
+						{
+							textRows.Add(RowToValues(Enumerable.Range(0, cols).Select(reader.GetValue)));
+
+							if (textRows.Count >= 100)
+							{
+								total += textRows.Count;
+								Write(sb, insertHeader, textRows);
+								textRows.Clear();
+
+								Console.CursorLeft = consoleCol;
+								Console.Write(total);
+							}
+						}
+
+
+						total += textRows.Count;
+						Write(sb, insertHeader, textRows);
+						Console.CursorLeft = consoleCol;
+						Console.Write(total);
+					}
+
+					if (sb.Length != 0)
+					{
+						if (isAutoIncrement)
+						{
+							sb.Insert(0, string.Format("SET IDENTITY_INSERT {0} ON\r\n\r\n", ti));
+							sb.Append(string.Format("SET IDENTITY_INSERT {0} OFF\r\n", ti));
+						}
+						File.WriteAllText(file, sb.ToString());
+
+						Console.WriteLine(" saved.");
+					}
+					else
+					{
+						Console.WriteLine();
+					}
+				}
+
+				return 0;
+			}
+			catch (Exception ex)
+			{
+				Console.WriteLine();
+				Console.WriteLine("Error: {0}", ex);
+				return 1;
+			}
+		}
+
+		private static void ShowUsage()
+		{
+			Console.WriteLine("Usage: MsSqlDataLoader [connectionString]");
+			Console.WriteLine("Example:");
+			Console.WriteLine("  MsSqlDataLoader \"Server=localhost;Database=Northwind;User Id=sa;Password=sa;\"");
 		}
 
 		public static List<TableInfo> GetTables(SqlConnection conn)
