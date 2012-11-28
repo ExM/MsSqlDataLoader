@@ -6,6 +6,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using NDesk.Options;
 
 namespace MsSqlDataLoader
 {
@@ -13,81 +14,78 @@ namespace MsSqlDataLoader
 	{
 		static int Main(string[] args)
 		{
-			if (args.Length != 1)
-			{
-				ShowUsage();
-				return 1;
-			}
+			bool showHelp = false;
 
-			var connString = args[0];
+			string serverName = null;
+			string dbName = null;
+			string user = null;
+			string pass = null;
+
+			string tableListFile = null;
+
+			bool loadData = false;
+			int block = 100;
+
+			var p = new OptionSet()
+			{
+				{ "s=|server=", "server name or IP address", v => serverName = v },
+				{ "d=|database=", "name of database", v => dbName = v },
+				{ "u=|user=", "user name", v => user = v },
+				{ "p=|password=", "password", v => pass = v },
+				{ "t=|tableList=", "file containing a list of tables", v => tableListFile = v },
+				{ "l|loadData", "load data from tables", v => loadData = v != null },
+				{ "b|block", "insert block (default - 100)", v => block = (v != null)?int.Parse(v):100 },
+				{ "h|help", "show this message and exit", v => showHelp = v != null }
+			};
 
 			try
 			{
+				p.Parse(args);
+				if (block <= 0)
+					block = 100;
+			}
+			catch (OptionException e)
+			{
+				Console.WriteLine("MsSqlDataLoader: {0}", e.Message);
+				Console.WriteLine("Try `MsSqlDataLoader --help' for more information.");
+				return 1;
+			}
+
+			if (showHelp)
+			{
+				ShowHelp(p);
+				return 0;
+			}
+
+			var connString = string.Format("Server={0};Database={1};User Id={2};Password={3};", serverName, dbName, user, pass);
+
+			try
+			{
+				List<string> tableList;
+
 				var conn = new SqlConnection(connString);
 				conn.Open();
 
-				foreach (var ti in GetTables(conn))
+				if(string.IsNullOrEmpty(tableListFile))
 				{
-					Console.Write("Load table {0} - ", ti.ToString());
-					int consoleCol = Console.CursorLeft;
-					Console.Write("0");
+					tableList = GetTableNames(conn);
+				}
+				else
+				{
+					tableList = File.ReadAllLines(tableListFile)
+						.Where(s => !string.IsNullOrWhiteSpace(s))
+						.ToList();
+				}
 
-					var file = ti.Schema + "." + ti.Name + ".sql";
-					bool isAutoIncrement = CheckIdentity(conn, ti);
-
-					string query = string.Format("select * from {0}", ti);
-
-					var cmd = new SqlCommand(query, conn);
-
-					var sb = new StringBuilder();
-
-					int total = 0;
-
-					using (var reader = cmd.ExecuteReader())
-					{
-						var cols = reader.FieldCount;
-						var colNames = Enumerable.Range(0, cols).Select(i => "[" + reader.GetName(i) + "]");
-						var insertHeader = string.Format("INSERT {0} ({1}) VALUES", ti, string.Join(", ", colNames));
-
-						var textRows = new List<string>();
-
-						while (reader.Read())
-						{
-							textRows.Add(RowToValues(Enumerable.Range(0, cols).Select(reader.GetValue)));
-
-							if (textRows.Count >= 100)
-							{
-								total += textRows.Count;
-								Write(sb, insertHeader, textRows);
-								textRows.Clear();
-
-								Console.CursorLeft = consoleCol;
-								Console.Write(total);
-							}
-						}
-
-
-						total += textRows.Count;
-						Write(sb, insertHeader, textRows);
-						Console.CursorLeft = consoleCol;
-						Console.Write(total);
-					}
-
-					if (sb.Length != 0)
-					{
-						if (isAutoIncrement)
-						{
-							sb.Insert(0, string.Format("SET IDENTITY_INSERT {0} ON\r\n\r\n", ti));
-							sb.Append(string.Format("SET IDENTITY_INSERT {0} OFF\r\n", ti));
-						}
-						File.WriteAllText(file, sb.ToString());
-
-						Console.WriteLine(" saved.");
-					}
-					else
-					{
-						Console.WriteLine();
-					}
+				if(loadData)
+				{
+					foreach (var tabName in tableList)
+						LoadData(conn, tabName);
+				}
+				else
+				{
+					foreach (var tabName in tableList)
+						Console.WriteLine(tabName);
 				}
 
 				return 0;
@@ -100,28 +98,97 @@ namespace MsSqlDataLoader
 			}
 		}
 
-		private static void ShowUsage()
+		private static void LoadData(SqlConnection conn, string tabName)
 		{
-			Console.WriteLine("Usage: MsSqlDataLoader [connectionString]");
-			Console.WriteLine("Example:");
-			Console.WriteLine("  MsSqlDataLoader \"Server=localhost;Database=Northwind;User Id=sa;Password=sa;\"");
+			Console.Write("Load table {0} - ", tabName);
+			int consoleCol = Console.CursorLeft;
+			Console.Write("0");
+
+			var file = tabName + ".sql";
+			bool isAutoIncrement = CheckIdentity(conn, tabName);
+
+			string query = string.Format("select * from {0}", tabName);
+
+			var cmd = new SqlCommand(query, conn);
+
+			var sb = new StringBuilder();
+
+			int total = 0;
+
+			using (var reader = cmd.ExecuteReader())
+			{
+				var cols = reader.FieldCount;
+				var colNames = Enumerable.Range(0, cols).Select(i => "[" + reader.GetName(i) + "]");
+				var insertHeader = string.Format("INSERT {0} ({1}) VALUES", tabName, string.Join(", ", colNames));
+
+				var textRows = new List<string>();
+
+				while (reader.Read())
+				{
+					textRows.Add(RowToValues(Enumerable.Range(0, cols).Select(reader.GetValue)));
+
+					if (textRows.Count >= 100)
+					{
+						total += textRows.Count;
+						Write(sb, insertHeader, textRows);
+						textRows.Clear();
+
+						Console.CursorLeft = consoleCol;
+						Console.Write(total);
+					}
+				}
+
+				total += textRows.Count;
+				Write(sb, insertHeader, textRows);
+				Console.CursorLeft = consoleCol;
+				Console.Write(total);
+			}
+
+			if (sb.Length != 0)
+			{
+				if (isAutoIncrement)
+				{
+					sb.Insert(0, string.Format("SET IDENTITY_INSERT {0} ON\r\n\r\n", tabName));
+					sb.Append(string.Format("SET IDENTITY_INSERT {0} OFF\r\n", tabName));
+				}
+				File.WriteAllText(file, sb.ToString());
+
+				Console.WriteLine(" saved.");
+			}
+			else
+			{
+				Console.WriteLine();
+			}
 		}
 
-		public static List<TableInfo> GetTables(SqlConnection conn)
+		static void ShowHelp(OptionSet p)
+		{
+			Console.WriteLine("Usage: MsSqlDataLoader [OPTIONS]");
+			Console.WriteLine("Options:");
+			p.WriteOptionDescriptions(Console.Out);
+			Console.WriteLine();
+			Console.WriteLine("Example:");
+			Console.WriteLine("  * Show all table names");
+			Console.WriteLine("  MsSqlDataLoader.exe -s=localhost -d=Northwind -u=sa -p=sa ");
+			Console.WriteLine("  * Load tables from list");
+			Console.WriteLine("  MsSqlDataLoader.exe -s=localhost -d=Northwind -u=sa -p=sa -t=tables.txt -l");
+		}
+
+		public static List<string> GetTableNames(SqlConnection conn)
 		{
 			DataTable schema = conn.GetSchema("Tables");
-			var result = new List<TableInfo>();
+			var result = new List<string>();
 			foreach (DataRow row in schema.Rows)
 			{
-				if(string.Equals("BASE TABLE", row[3].ToString(), StringComparison.InvariantCultureIgnoreCase))
-					result.Add(new TableInfo() {Name = row[2].ToString(), Schema = row[1].ToString()});
+				if (string.Equals("BASE TABLE", row[3].ToString(), StringComparison.InvariantCultureIgnoreCase))
+					result.Add(string.Format("[{0}].[{1}]", row[1], row[2]));
 			}
 			return result;
 		}
 
-		private static bool CheckIdentity(SqlConnection conn, TableInfo ti)
+		private static bool CheckIdentity(SqlConnection conn, string tabName)
 		{
-			string cmdText = string.Format("SELECT TOP(1) * FROM {0}", ti);
+			string cmdText = string.Format("SELECT TOP(1) * FROM {0}", tabName);
 
 			var dataTable = new DataTable();
 			new SqlDataAdapter(cmdText, conn).FillSchema(dataTable, SchemaType.Source);
